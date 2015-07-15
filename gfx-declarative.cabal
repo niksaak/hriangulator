@@ -2,7 +2,7 @@
 -- documentation, see http://haskell.org/cabal/users-guide/
 
 -- The name of the package.
-name:                gfx-declarative
+name:                hriangulator
 
 -- The package version.  See the Haskell package versioning policy (PVP) 
 -- for standards guiding when and how versions should be incremented.
@@ -49,13 +49,13 @@ cabal-version:       >=1.10
 executable gfx-declarative
   -- .hs or .lhs file containing the Main module.
   main-is:             Main.hs
-  
+
   -- Modules included in this executable, other than Main.
   -- other-modules:       
-  
+
   -- LANGUAGE extensions used by modules in this package.
-  -- other-extensions:    
-  
+  other-extensions:    Arrows, DataKinds, TypeOperators, FlexibleContexts
+
   -- Other library packages from which modules are imported.
   build-depends:       AC-Vector  >=2.3  && <2.4,
                        base       >=4.8  && <4.9,
@@ -74,7 +74,9 @@ executable gfx-declarative
 
   -- Directories containing source files.
   -- hs-source-dirs:      
-  
+
   -- Base language which the package is written in.
   default-language:    Haskell2010
-  
+
+  ghc-options: -W
+
