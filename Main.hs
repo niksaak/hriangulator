@@ -3,20 +3,19 @@ module Main where
 
 import Prelude hiding ((.))
 
-import qualified Control.Arrow as Arrow
 import Control.Arrow hiding ((<+>))
-import Control.Applicative
 import Control.Monad
+import Control.Monad.Fix (fix)
 import Data.ByteString (ByteString)
-import Data.List
 import Data.Maybe
 import Data.StateVar
-import Data.Vector
+import qualified Data.Vector.Storable as V
+import Data.Vector.Storable (Vector)
 import System.IO
 
 import Data.Vinyl
 import Linear
-import qualified Data.Vector.V2 as ACV2
+import qualified Data.Vector.V2 as ACV -- For Delaunay
 
 import qualified Graphics.GLUtil as GLUtil
 import qualified Graphics.Rendering.OpenGL as GL
@@ -24,17 +23,20 @@ import qualified Graphics.Triangulation.Delaunay as Delaunay
 import qualified Graphics.UI.GLFW as GLFW
 import qualified Graphics.VinylGL as VinylGL
 
-import qualified Control.Wire
-import Control.Wire (Wire(..))
-import qualified FRP.Netwire as Netwire
+import qualified Control.Wire as W
+import Control.Wire (Wire)
+import qualified FRP.Netwire as NW
 import FRP.Netwire ((.))
+
+--------------------------------------------------------------------------------
+-- Data
 
 projection = SField :: SField '("projection", M44 GL.GLfloat)
 modelview  = SField :: SField '("modelview",  M44 GL.GLfloat)
 position   = SField :: SField '("position",   V2  GL.GLfloat)
 
-vertexSource :: (GL.ShaderType, ByteString)
-vertexSource = (GL.VertexShader, GL.packUtf8 $ unlines [
+vertexSource :: ByteString
+vertexSource = GL.packUtf8 $ unlines [
     "#version 430",
     "uniform mat4 projection;",
     "uniform mat4 modelview;",
@@ -42,18 +44,18 @@ vertexSource = (GL.VertexShader, GL.packUtf8 $ unlines [
     "void main() {",
     "    gl_Position = projection * modelview * vec4(position, 0, 1);",
     "}"
-    ])
+    ]
 
-fragmentSource :: (GL.ShaderType, ByteString)
-fragmentSource = (GL.FragmentShader, GL.packUtf8 $ unlines [
+fragmentSource :: ByteString
+fragmentSource = GL.packUtf8 $ unlines [
     "#version 430",
     "void main() {",
     "    gl_FragColor = vec4(1, 1, 1, 1);",
     "}"
-    ])
+    ]
 
 data Resources = Resources {
-    polygon :: [V2 Double]
+    polygon :: Vector (V2 Double)
 }
 
 data Renderer = Renderer {
@@ -63,15 +65,24 @@ data Renderer = Renderer {
     draw     :: IO ()
 }
 
-circlePolygon :: Double -> Double -> [V2 Double]
-circlePolygon r count = map ((r *^) . angle . (* (2*pi / count))) [0..count]
+--------------------------------------------------------------------------------
+-- Helpers
 
-triangulate :: [V2 Double] -> [V2 Double]
-triangulate =
-    map toAC >>> Delaunay.triangulate >>> map fromTriple >>> concatMap fromAC
-    where toAC (V2 x y) = ACV2.Vector2 x y
-          fromTriple (x, y, z) = [x, y, z]
-          fromAC (ACV2.Vector2 x y) = V2 x y
+circlePolygon :: Double -> Int -> Vector (V2 Double)
+circlePolygon r count =
+    V.map ((* (2*pi / n)) >>> angle >>> (r *^)) $ V.enumFromN 0 count
+    where n = fromIntegral count
+
+triangulate :: Vector (V2 Double) -> Vector (V2 Double)
+triangulate = V.toList
+          >>> map (\(V2 x y) -> ACV.Vector2 x y)
+          >>> Delaunay.triangulate
+          >>> concatMap (\(x, y, z) -> [x, y, z])
+          >>> map (\(ACV.Vector2 x y) -> V2 x y)
+          >>> V.fromList
+
+--------------------------------------------------------------------------------
+-- Init
 
 initGL :: String -> (Int, Int) -> IO GLFW.Window
 initGL title (w, h) = do
@@ -99,8 +110,8 @@ initGL title (w, h) = do
 
 initRender :: Resources -> IO Renderer
 initRender res = do
-    vb  <- VinylGL.bufferVertices $ map ((position =:) . fmap realToFrac) $ polygon res
-    sh  <- GLUtil.loadShaderProgramBS [vertexSource, fragmentSource]
+    vb  <- VinylGL.bufferVertices $ V.map ((position =:) . fmap realToFrac) $ polygon res
+    sh  <- GLUtil.simpleShaderProgramBS vertexSource fragmentSource
     vao <- GLUtil.makeVAO $ do
         GL.currentProgram $= Just (GLUtil.program sh)
         VinylGL.setAllUniforms sh $ projection =: Linear.ortho (-250) 250 (-250) 250 0 1
@@ -116,27 +127,42 @@ initRender res = do
         draw     = do
             GL.currentProgram $= Just (GLUtil.program sh)
             GLUtil.withVAO vao $
-                GL.drawArrays GL.Triangles 0 $ fromIntegral . (*2) . length . polygon $ res
+                GL.drawArrays GL.Triangles 0 $ fromIntegral . (*2) . V.length . polygon $ res
     }
 
-{-
-runNetwork :: (HasTime t s) => Session IO s -> Wire s e IO a Double -> IO ()
-runNetwork session wire = 
--}
+-------------------------------------------------------------------------------
+-- Wires (TODO)
+
+mousePosition :: GLFW.Window -> Wire s e IO a (Double, Double)
+mousePosition win = W.mkGen_ $ \_ -> liftM Right (GLFW.getCursorPos win)
+
+isMousePressed :: (Monoid e) => GLFW.Window -> GLFW.MouseButton -> Wire s e IO a a
+isMousePressed win button = W.mkGen_ $ \x -> do
+    state <- GLFW.getMouseButton win button
+    case state of
+        GLFW.MouseButtonState'Pressed  -> return $ Right x
+        GLFW.MouseButtonState'Released -> return $ Left mempty
+
+--updateShape :: Wire s e IO (Renderer, V2 Double) Renderer
+--updateShape = mkGen_ -- TODO
+
+-- runNetwork :: (HasTime t s) => Session IO s -> Wire s e IO a Double -> IO ()
+
+--------------------------------------------------------------------------------
+-- Main
 
 main = do
     win <- initGL "Test" (500, 500)
 
     let res = Resources {
         --polygon = triangulate $ V2 <$> [-100, 100] <*> [-100, 100]
-        polygon = triangulate $ circlePolygon 200 32
+        polygon = triangulate $ circlePolygon 200 8
     }
 
     r <- initRender res
-    let go = do draw r
-                GLFW.swapBuffers win
-                GLFW.waitEvents
-                ks <- GLFW.getKey win GLFW.Key'Escape
-                unless (ks == GLFW.KeyState'Pressed) go
+    fix $ \loop -> do draw r
+                      GLFW.swapBuffers win
+                      GLFW.waitEvents
+                      ks <- GLFW.getKey win GLFW.Key'Escape
+                      unless (ks == GLFW.KeyState'Pressed) loop
 
-    go
